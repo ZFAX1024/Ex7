@@ -15,49 +15,72 @@
 
 ## 二、实验内容与过程
 
-### 2.1 实验环境初始化与模型加载
+### 2.1 环境配置与类别映射
+实验首先配置了中文字体以支持可视化输出，并定义了 COCO 数据集的类别映射表。
 
-在实验开始阶段，首先进行环境配置。为了提升推理效率，通过 `torch.device`
-接口检测并启用显卡加速。随后，采用 PyTorch 官方推荐的 `weights`
-参数化方式加载预训练模型，以替代已弃用的 `pretrained` 参数。
-
-``` python
+```
 import torch
 import torchvision
 from torchvision.models.detection import FasterRCNN_ResNet50_FPN_Weights
+from torchvision.ops import nms
 from torchvision import transforms as T
+from PIL import Image
+import matplotlib.pyplot as plt
+import os
 
+plt.rcParams['font.sans-serif'] = ['SimHei'] 
+plt.rcParams['axes.unicode_minus'] = False
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-# 加载 Faster R-CNN 模型，采用 ResNet-50 作为骨干网络并加载默认预训练权重
+COCO_CLASSES = ['__background__', 'person', 'bicycle', 'car', ..., 'toothbrush']
+```
+
+### 2.2 模型加载与理论架构
+采用 ResNet-50 作为骨干网络的 Faster R-CNN 模型。
+
+```
 weights = FasterRCNN_ResNet50_FPN_Weights.DEFAULT
 model = torchvision.models.detection.fasterrcnn_resnet50_fpn(weights=weights)
-model.to(device)
-model.eval()  
+model.to(device).eval()
 ```
 
-### 2.2 数据预处理流程
+### 2.3 核心预测逻辑
 
-为了使本地图像满足模型的输入规范，定义了如下预处理逻辑。通过
-`T.ToTensor()` 将图像像素值由 `[0, 255]` 归一化至 `[0, 1]` 浮点区间。
+#### 2.3.1 推理代码实现
 
-``` python
-from PIL import Image
+预测逻辑涵盖了从图像预处理到张量上载显存，再到模型前向计算的全过程。
 
-def preprocess_image(img_path):
-    # 读取本地图片并转换为 RGB 格式
-    img = Image.open(img_path).convert("RGB")
-    # 将 PIL 图像转换为模型所需的 Tensor 格式并上载至 GPU
+```
+def get_raw_prediction(image_path):
+    # 图像预处理：标准化并转换为 Tensor
+    img = Image.open(image_path).convert("RGB")
     transform = T.Compose([T.ToTensor()])
-    return img, transform(img).to(device)
+    img_tensor = transform(img).to(device) # 数据移动至 GPU 参与计算
+    
+    with torch.no_grad():
+        # 执行前向传播，获取原始预测结果
+        prediction = model([img_tensor])[0]
+    
+    return img, prediction
 ```
 
-### 2.3 实验中发现的问题：同一物体的多框冗余
+#### 2.3.2 发现问题：同一个自行车出现多个检测框
+在对实验集图片（尤其是包含自行车的场景）进行测试时，观察到明显的冗余现象：同一个自行车物理实体被多个相互重叠的预测框包围,尽管这些框的置信度评分（Scores）均超过了 0.7.
 
-在初步测试中，使用包含"自行车"的本地图片进行推理。观察原始输出发现：由于
-RPN
-网络会在同一目标周围生成多个候选锚框（Anchors），导致同一个自行车实体被多个边界框覆盖。虽然这些框的置信度均较高，但严重的视觉重叠降低了检测的准确性。
 ![image](/output_results/result_dog_bike_car.jpg)
+
+#### 2.3.3 深度理论分析：冗余产生的根源
+
+RPN 与锚框机制（Anchors）：Faster R-CNN 的 RPN 网络在特征图的每个像素点生成不同尺度（Scales）和长宽比（Aspect Ratios）的锚框。对于自行车这种具有细长结构的目标，会有多个不同形状的锚框同时与该物体产生较高的交并比（IoU）。在训练过程中，这些锚框都会被标记为正样本进行回归训练。
+
+坐标回归的收敛性：模型在推理时，RPN 会生成约 2000 个候选区域（Proposals）。虽然这些框起始位置不同，但经过后端的边界框回归（Bounding Box Regression）网络修正后，多个高分的预测框往往会收敛到物体的同一个特征区域。
+
+交并比（IoU）的度量作用：冗余的本质是模型对同一空间区域进行了多次重复预测。为了衡量这种重叠程度，引入 IoU 指标，定义如下：
+
+$$\text{IoU} = \frac{\text{Area of Overlap}}{\text{Area of Union}}$$
+
+实验发现，自行车的多个预测框之间的 IoU 往往在 0.5 到 0.8 之间。原始输出逻辑缺乏有效的互斥机制，导致这些高度重叠的框被全数保留。
+
 ### 2.4 代码改进与 NMS 优化决策
 
 针对上述问题，实验引入了 `torchvision.ops.nms`
@@ -85,7 +108,7 @@ def post_process(prediction, score_thresh=0.7, nms_thresh=0.3):
 
 ------------------------------------------------------------------------
 
-## 三、实验结果与分析（重点）
+## 三、实验结果与分析
 
 ### 3.1 实验结果描述
 
@@ -105,19 +128,12 @@ GPU 加速下的单图推理耗时保持在 0.1 s 以内，满足实时处理的
     产生的低置信度背景噪声。实验观察到，若此值过低，图像中会出现较多无关的散碎框。
 
 -   **NMS 算子与 IoU 理论应用**\
-    代码核心在于利用 IoU 判断重叠程度，其数学公式如下：
+    代码核心在于利用 IoU 判断重叠程度.
 
-    $$
-    \text{IoU} = \frac{\mathcal{A} \cap \mathcal{B}}{\mathcal{A} \cup \mathcal{B}}
-    $$
 
     针对自行车检测中的多框问题，将 `nms_threshold` 设为 0.3
     是基于调试验证后的最优决策。较小的阈值能够强制删除那些重叠度即便不高但属于同一目标的冗余框，从而显著改善了检测框的唯一性。
 
--   **硬件数据同步（`.to(device)` 与 `.cpu()`）**\
-    这是实验能够顺畅运行的技术前提。原始图像通过 Tensor
-    形式上载至显存参与高速矩阵运算，而推理出的坐标信息需通过 `.cpu()`
-    下载回内存，以便 `matplotlib` 进行后续的图像渲染与保存。
 
 ------------------------------------------------------------------------
 
