@@ -1,7 +1,4 @@
-# 实验报告：基于 Faster R-CNN 的目标检测算法实践
-
-**实验环境：** Windows 11，Jupyter Notebook，PyTorch 2.x，NVIDIA
-GPU（CUDA 加速）
+# 实验七
 
 ------------------------------------------------------------------------
 
@@ -30,14 +27,13 @@ import torchvision
 from torchvision.models.detection import FasterRCNN_ResNet50_FPN_Weights
 from torchvision import transforms as T
 
-# 硬件设备配置：优先使用显卡加速
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 # 加载 Faster R-CNN 模型，采用 ResNet-50 作为骨干网络并加载默认预训练权重
 weights = FasterRCNN_ResNet50_FPN_Weights.DEFAULT
 model = torchvision.models.detection.fasterrcnn_resnet50_fpn(weights=weights)
 model.to(device)
-model.eval()  # 切换至推理模式，冻结网络参数
+model.eval()  
 ```
 
 ### 2.2 数据预处理流程
@@ -61,7 +57,7 @@ def preprocess_image(img_path):
 在初步测试中，使用包含"自行车"的本地图片进行推理。观察原始输出发现：由于
 RPN
 网络会在同一目标周围生成多个候选锚框（Anchors），导致同一个自行车实体被多个边界框覆盖。虽然这些框的置信度均较高，但严重的视觉重叠降低了检测的准确性。
-
+![image](/output_results/result_dog_bike_car.jpg)
 ### 2.4 代码改进与 NMS 优化决策
 
 针对上述问题，实验引入了 `torchvision.ops.nms`
