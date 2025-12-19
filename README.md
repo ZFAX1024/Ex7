@@ -106,7 +106,11 @@ def post_process(prediction, score_thresh=0.7, nms_thresh=0.3):
     return boxes[keep_idx].cpu().numpy(), labels[keep_idx].cpu().numpy()
 ```
 
-------------------------------------------------------------------------
+改进代码后结果显著改善
+
+![image](/oclean_results/clean_dog_bike_car.jpg)
+
+----------------------------------------------------------------------
 
 ## 三、实验结果与分析
 
